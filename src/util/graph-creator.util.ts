@@ -1,19 +1,43 @@
 import path from 'path';
 import fs from 'fs';
+import util from 'util';
 
 export class GraphCreatorUtil {
     private static repoRoot = path.join(__dirname, './');
 
-    public static createGraphForDir(absoluteDir: string): Record<string, string[]> {
-        const fileToImportsMap: Record<string, string[]> = {};
+    public static async createGraphForDir(absoluteDir: string): Promise<Record<string, string[]>> {
         const allFiles: string[] = GraphCreatorUtil.getFilePathsRecursively(absoluteDir)
             .filter((filePath) => /\.ts$/.test(filePath))
             .map((filePath) => GraphCreatorUtil.convertAbsolutePathToPathRelativeToRoot(filePath));
 
-        allFiles.forEach((filePath: string) => {
-            fileToImportsMap[filePath] = GraphCreatorUtil.getAllRelevantImportsRelativeToRoot(filePath);
+        return this.getAllRelevantImportsRelativeToRootFromFiles(allFiles);
+    }
+
+    private static async getAllRelevantImportsRelativeToRootFromFiles(relativeFilePaths: string[]): Promise<Record<string, string[]>> {
+        const relevantImportsRelativeToRoot: Record<string, string[]> = {};
+        const promises: Promise<void>[] = relativeFilePaths.map((relativeFilePath: string) => {
+            const absoluteFilePath = path.join(GraphCreatorUtil.repoRoot, relativeFilePath);
+            return util
+                .promisify(fs.readFile)(absoluteFilePath)
+                .then((fileContent): void => {
+                    const response = fileContent
+                        .toString()
+                        .split('\n')
+                        .filter((line: string) => /from '.*';/.test(line))
+                        .map((fromLine: string): string =>
+                            fromLine
+                                .replace(/.*from/, '')
+                                .replace(/['"]/g, '')
+                                .replace(';', '')
+                        )
+                        .map((relativeOrPackage: string): string => relativeOrPackage.trim())
+                        .filter((relativeOrPackage: string) => GraphCreatorUtil.isRelativeImport(relativeOrPackage));
+                    relevantImportsRelativeToRoot[relativeFilePath] = response;
+                });
         });
-        return fileToImportsMap;
+        return Promise.all(promises).then((): Record<string, string[]> => {
+            return relevantImportsRelativeToRoot;
+        });
     }
 
     private static getAllRelevantImportsRelativeToRoot(filePath: string): string[] {
